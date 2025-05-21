@@ -274,7 +274,7 @@ generate_flake_nix() {
         name = "firmware";
         src = nixpkgs.lib.sourceFilesBySuffices self [ ".board" ".cmake" ".conf" ".defconfig" ".dts" ".dtsi" ".json" ".keymap" ".overlay" ".shield" ".yml" "_defconfig" ];
         board = "seeeduino_xiao_ble";
-        shield = "${SHIELD_BASE}_%PART%";
+        shield = "${SHIELD_BASE}$([ "$IS_SPLIT" = true ] && echo "_%PART%")";
 $([ -n "$parts_config" ] && echo "$parts_config")
 $([ -n "$snippets_config" ] && echo "$snippets_config")
 $([ -n "$studio_config" ] && echo "$studio_config")
@@ -348,9 +348,18 @@ main() {
                     sed -i "s|zephyrDepsHash = \".*\"|zephyrDepsHash = \"$new_hash\"|" flake.nix
                     hack_print "Updated hash: $new_hash" 0.02
                     hack_print "Retrying build..." 0.02
-                    nix build -L
+                    if ! nix build -L; then
+                        echo -e "${RED}[✗] Build failed after hash update${NC}"
+                        cat build_error.log
+                        exit 1
+                    fi
                 fi
+            elif echo "$error_output" | grep -q "FATAL ERROR:"; then
+                echo -e "${RED}[✗] Fatal error occurred during build${NC}"
+                cat build_error.log
+                exit 1
             else
+                echo -e "${RED}[✗] Build failed with error${NC}"
                 cat build_error.log
                 exit 1
             fi
