@@ -125,6 +125,9 @@ parse_build_yaml() {
     SHIELDS=()
     SNIPPETS=()
     while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        
         if [[ $line =~ shield:\ *(.*) ]]; then
             shield="${BASH_REMATCH[1]}"
             if [[ $shield != "settings_reset" ]]; then
@@ -143,13 +146,30 @@ parse_build_yaml() {
     SHIELD_BASE=""
     IS_SPLIT=false
     if [ ${#SHIELDS[@]} -gt 0 ]; then
-        IFS=' ' read -ra SHIELD_PARTS <<< "${SHIELDS[0]}"
-        if [[ "${SHIELD_PARTS[0]}" =~ _[LR]$ ]]; then
-            IS_SPLIT=true
-            SHIELD_BASE=$(echo "${SHIELD_PARTS[0]}" | sed 's/_[LR]$//' | tr -d '\n')
-        else
-            SHIELD_BASE="${SHIELD_PARTS[0]}"
+        # First pass: look for _L/_R pattern to detect split keyboard
+        for shield in "${SHIELDS[@]}"; do
+            IFS=' ' read -ra SHIELD_PARTS <<< "$shield"
+            base_name="${SHIELD_PARTS[0]}"
+            if [[ "$base_name" =~ _[LR][[:space:]]$ ]]; then
+                IS_SPLIT=true
+                SHIELD_BASE=$(echo "$base_name" | sed 's/_[LR]\s$//')
+                echo -e "${BLUE}[*]${NC} Detected split keyboard from: $base_name"
+                break
+            fi
+        done
+
+        # If not split, use the first valid shield
+        if [ "$IS_SPLIT" = false ]; then
+            for shield in "${SHIELDS[@]}"; do
+                IFS=' ' read -ra SHIELD_PARTS <<< "$shield"
+                base_name="${SHIELD_PARTS[0]}"
+                if [[ "$base_name" != "settings_reset" ]]; then
+                    SHIELD_BASE="$base_name"
+                    break
+                fi
+            done
         fi
+
         echo -e "${GREEN}[✓]${NC} Shield base: $SHIELD_BASE"
         echo -e "${GREEN}[✓]${NC} Keyboard type: $([ "$IS_SPLIT" = true ] && echo "Split keyboard" || echo "Unified keyboard")"
     fi
@@ -158,28 +178,24 @@ parse_build_yaml() {
     # [+] Generate parts list
     declare -A unique_parts
     PARTS=()
-    for shield in "${SHIELDS[@]}"; do
-        echo -e "${BLUE}[*]${NC} Processing shield: $shield"
-        IFS=' ' read -ra SHIELD_PARTS <<< "$shield"
-        if [[ "${SHIELD_PARTS[0]}" =~ _([LR])$ ]]; then
-            part="${BASH_REMATCH[1]}"
-            if [ ! -z "$part" ] && [ -z "${unique_parts[$part]}" ]; then
-                part_config="\"$part"
-                if [ ${#SHIELD_PARTS[@]} -gt 1 ]; then
-                    # Add extras based on part type
-                    if [ "$part" = "L" ]; then
-                        part_config+=" ${SHIELD_PARTS[@]:1}"
-                    elif [ "$part" = "R" ] && [ "${SHIELD_PARTS[1]}" = "rgbled_adapter" ]; then
-                        part_config+=" rgbled_adapter"
-                    fi
+    if [ "$IS_SPLIT" = true ]; then
+        for shield in "${SHIELDS[@]}"; do
+            # Clean up shield name and remove any quotes
+            shield=$(echo "$shield" | tr -d '"' | xargs)
+            echo -e "${BLUE}[*]${NC} Processing shield: $shield"
+            
+            if [[ "$shield" =~ _([LR])[[:space:]]$ ]]; then
+                part="${BASH_REMATCH[1]}"
+                echo -e "${BLUE}[*]${NC} Found part: $part"
+                if [ -z "${unique_parts[$part]}" ]; then
+                    part_config="\"$part\""
+                    unique_parts[$part]=1
+                    PARTS+=("$part_config")
+                    echo -e "${GREEN}[✓]${NC} Generated part config: $part_config"
                 fi
-                part_config+="\""
-                unique_parts[$part]=1
-                PARTS+=($part_config)
-                echo -e "${GREEN}[✓]${NC} Generated part config: $part_config"
             fi
-        fi
-    done
+        done
+    fi
 
     echo -e "${GREEN}[✓]${NC} Configuration loaded successfully"
     hack_print "Shield Base: $SHIELD_BASE" 0.02
@@ -331,6 +347,10 @@ main() {
     hack_print "Generating flake.nix configuration..." 0.02
     show_progress 4 $total_steps
     generate_flake_nix
+    
+    # [+] Sanitize output
+    sed -i -E ':a;N;$!ba;s/shield = "([^"]*)\r"/shield = "\1"/g' flake.nix
+    sed -i -E ':a;N;$!ba;s/snippets = \[ "([^"]*)\r" \]/snippets = [ "\1" ]/g' flake.nix
 
     # [*] Execute firmware build
     if [ "$DRY_RUN" = true ]; then
